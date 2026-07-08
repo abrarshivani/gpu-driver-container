@@ -13,6 +13,9 @@
 # limitations under the License.
 
 # DRIVER_VERSIONS contains latest version in all active datacenter branches
+# NOTE: the ubuntu2604 CUDA repository does not carry branch 580, so the aggregate
+# ubuntu26.04 targets cannot build it; use per-version targets (e.g.
+# build-ubuntu26.04-595.71.05) or override DRIVER_VERSIONS for that distribution.
 DRIVER_VERSIONS ?= 580.173.02 595.71.05
 
 GOLANG_VERSION := 1.26.4

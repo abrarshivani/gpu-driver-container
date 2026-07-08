@@ -33,6 +33,7 @@ jobs:
         dist:
           - ubuntu22.04
           - ubuntu24.04
+          - ubuntu26.04
           - rhel8
           - rhel9
           - rhel10
@@ -41,6 +42,10 @@ jobs:
           - rocky10
         ispr:
           - ${{github.event_name == 'pull_request'}}
+        # The ubuntu2604 CUDA repository carries only driver branches >= 595
+        exclude:
+          - dist: ubuntu26.04
+            driver: 580.173.02
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
