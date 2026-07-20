@@ -493,8 +493,11 @@ jobs:
         run: |
           image_path="./driver-images-${{ matrix.driver_branch }}-${{ env.KERNEL_VERSION }}.tar"
           echo "uploading  $image_path"
-          if [[ "${{ github.ref == 'refs/heads/main' }}" == "true" ]]; then
-            skopeo copy --authfile "${REGISTRY_AUTH_FILE}" "oci-archive:${image_path}" docker://${PRIVATE_REGISTRY}/nvidia/driver:${{ matrix.driver_branch }}-${{ env.KERNEL_VERSION }}
+          if [[ "${{ github.ref == 'refs/heads/main' }}" == "true" ]] || [[ "${{ github.ref == 'refs/heads/skopeo-multiarch-issue' }}" == "true" ]]; then
+            mkdir -p /tmp/oci-image
+            tar -xf "${image_path}" -C /tmp/oci-image
+            skopeo copy --all --authfile "${REGISTRY_AUTH_FILE}" "oci:/tmp/oci-image" docker://${PRIVATE_REGISTRY}/nvidia/driver:"test"-${{ matrix.driver_branch }}-${{ env.KERNEL_VERSION }}
+            rm -rf /tmp/oci-image
           else
             echo "Skipping image push for non-main branch ${{ github.ref }}"
           fi
