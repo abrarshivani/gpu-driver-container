@@ -42,4 +42,3 @@ if [[ $status_nvcr -eq 0 || $status_ghcr -eq 0 ]]; then
 else
     export should_continue=true
 fi
-export should_continue=true
