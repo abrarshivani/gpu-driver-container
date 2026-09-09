@@ -170,6 +170,38 @@ _get_module_params() {
     fi
 }
 
+_configure_fabric_manager() {
+    local fm_config_file=/usr/share/nvidia/nvswitch/fabricmanager.cfg
+
+    local nvfm_env_vars
+    nvfm_env_vars=$(env | grep '^NVFM_CONFIG_' || true)
+    [ -z "${nvfm_env_vars}" ] && return 0
+
+    if [ ! -f "${fm_config_file}" ]; then
+        echo "WARNING: ${fm_config_file} not found; cannot configure Fabric Manager"
+        return 0
+    fi
+
+    while IFS='=' read -r name value; do
+        local field="${name#NVFM_CONFIG_}"
+        if [ -z "${field}" ]; then
+            echo "WARNING: ignoring environment variable '${name}=' with an empty config field name"
+            continue
+        fi
+        echo "Setting Fabric Manager config ${field}=${value} in ${fm_config_file}"
+        if grep -q "^${field}=" "${fm_config_file}"; then
+            # Escape characters that are special in the replacement half of a sed
+            # s||| command (backslash, ampersand and the '|' delimiter) so that a
+            # value cannot corrupt the substitution or inject extra sed commands.
+            local sed_escaped_value
+            sed_escaped_value=$(printf '%s' "${value}" | sed -e 's/[\\&|]/\\&/g')
+            sed -i "s|^${field}=.*|${field}=${sed_escaped_value}|" "${fm_config_file}"
+        else
+            printf '\n%s=%s\n' "${field}" "${value}" >> "${fm_config_file}"
+        fi
+    done <<< "${nvfm_env_vars}"
+}
+
 # Load the kernel modules and start persistenced.
 _load_driver() {
     echo "Parsing kernel module parameters..."
@@ -209,6 +241,7 @@ _load_driver() {
     fi
 
     if _assert_nvswitch_system; then
+        _configure_fabric_manager
         echo "Starting NVIDIA fabric manager daemon..."
         nv-fabricmanager -c /usr/share/nvidia/nvswitch/fabricmanager.cfg || return 1
     fi
