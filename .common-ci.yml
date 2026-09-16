@@ -19,7 +19,7 @@ default:
       command: ["--experimental"]
 
 variables:
-  DRIVER_VERSIONS: 580.178.04 595.91.07 610.57.04 615.71.09
+  DRIVER_VERSIONS: 580.178.04 595.91.07 615.71.09
   BUILD_MULTI_ARCH_IMAGES: "true"
 
 stages:
@@ -81,23 +81,23 @@ trigger-pipeline:
 .driver-versions:
   parallel:
     matrix:
-      - DRIVER_VERSION: [580.178.04, 595.91.07, 610.57.04, 615.71.09]
+      - DRIVER_VERSION: [580.178.04, 595.91.07, 615.71.09]
 
 # Define the driver versions for jobs that can be run in parallel
 .driver-versions-ubuntu24.04:
   parallel:
     matrix:
-      - DRIVER_VERSION: [580.178.04, 595.91.07, 610.57.04, 615.71.09]
+      - DRIVER_VERSION: [580.178.04, 595.91.07, 615.71.09]
 
 .driver-versions-ubuntu26.04:
   parallel:
     matrix:
-      - DRIVER_VERSION: [595.91.07, 610.57.04, 615.71.09]
+      - DRIVER_VERSION: [595.91.07, 615.71.09]
 
 .driver-versions-rhel10:
   parallel:
     matrix:
-      - DRIVER_VERSION: [580.178.04, 595.91.07, 610.57.04, 615.71.09]
+      - DRIVER_VERSION: [580.178.04, 595.91.07, 615.71.09]
 
 # Define the matrix of precompiled jobs that can be run in parallel for ubuntu22.04
 .driver-versions-precompiled-ubuntu22.04:
@@ -178,7 +178,18 @@ trigger-pipeline:
     -  curl -sSLo ~/.docker/cli-plugins/docker-buildx "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-amd64"
     -  chmod a+x ~/.docker/cli-plugins/docker-buildx
     -  docker buildx create --use --platform=linux/amd64,linux/arm64
-    -  '[[ -n "${SKIP_QEMU_SETUP}" ]] || docker run --rm --privileged multiarch/qemu-user-static --reset -p yes'
+    -  |
+       if [[ -z "${SKIP_QEMU_SETUP}" ]]; then
+         # No single emulator serves every release: the one ubuntu26.04 arm64 needs
+         # breaks the jammy glibc, so only ubuntu26.04 moves off the shared image.
+         # --install leaves an already registered handler alone, hence the uninstall.
+         if [[ "${DIST}" == *ubuntu26.04 ]]; then
+           docker run --rm --privileged tonistiigi/binfmt:qemu-v10.1.3 --uninstall 'qemu-*'
+           docker run --rm --privileged tonistiigi/binfmt:qemu-v10.1.3 --install all
+         else
+           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+         fi
+       fi
 
 # Download the regctl binary for use in the release steps
 .regctl-setup:
