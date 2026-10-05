@@ -25,6 +25,10 @@ for SOURCE in "$@"; do
     *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
   esac
   [[ -f "$ARCHIVE" ]] || { echo "Missing archive: $SOURCE" >&2; exit 1; }
+  if [[ " ${EXPECTED_ARCHITECTURES[*]} " == *" $ARCH "* ]]; then
+    echo "Duplicate architecture: $ARCH" >&2
+    exit 1
+  fi
   ARCH_REF="ocidir://${WORK_DIR}/${ARCH}:native"
   "$REGCTL" image import "$ARCH_REF" "$ARCHIVE"
   REF_ARGS+=(--ref "$ARCH_REF")

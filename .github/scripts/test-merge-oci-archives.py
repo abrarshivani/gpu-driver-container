@@ -200,7 +200,7 @@ class MergeArchivesTest(unittest.TestCase):
             f"amd64={self.root}/amd64.tar", f"amd64={self.root}/amd64.tar"
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("do not match", result.stderr)
+        self.assertIn("Duplicate architecture: amd64", result.stderr)
         self.assertFalse(self.output.exists())
 
     def test_source_without_architecture_is_a_usage_error(self) -> None:
