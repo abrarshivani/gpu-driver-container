@@ -72,7 +72,6 @@ jobs:
       platforms: ${{ needs.set-driver-version-matrix.outputs.platforms }}
       image-name: ghcr.io/nvidia/driver
       output: oci
-    secrets: inherit
 
   determine-e2e-test-matrix:
     runs-on: linux-amd64-cpu4

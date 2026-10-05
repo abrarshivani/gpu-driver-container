@@ -30,6 +30,12 @@ jobs:
         name: Check out code
       - name: Run verify-manifest-match tests
         run: ./.github/scripts/test-verify-manifest-match.sh
+
+  test-merge-oci-archives:
+    runs-on: linux-amd64-cpu4
+    steps:
+      - uses: actions/checkout@v7
+        name: Check out code
       - name: Set up regctl
         uses: ./.github/actions/setup-regctl
       - name: Test offline OCI archive assembly
@@ -235,4 +241,3 @@ jobs:
       lts-kernel: ${{ format('{0}', matrix.lts_kernel) }}
       output: image
       push-images: ${{ github.actor != 'dependabot[bot]' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
-    secrets: inherit

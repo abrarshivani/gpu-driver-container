@@ -85,10 +85,15 @@ jobs:
           DRIVER_BRANCH: ${{ inputs.driver-branch }}
           KERNEL_FLAVOR: ${{ inputs.flavor }}
           LTS_KERNEL: ${{ inputs.lts-kernel }}
+          DIST: ${{ inputs.dist }}
+          OUTPUT: ${{ inputs.output }}
         run: |
           set -euo pipefail
           # Discover one kernel/driver pair for both native architectures.
-          make DOCKER_BUILD_PLATFORM_OPTIONS=--platform=linux/amd64 \
+          # The Makefile's build-% rule parses DRIVER_BRANCH from the target name
+          # ("noble" for build-base-noble); only a command-line value overrides it.
+          make DRIVER_BRANCH="$DRIVER_BRANCH" KERNEL_FLAVOR="$KERNEL_FLAVOR" LTS_KERNEL="$LTS_KERNEL" \
+            DOCKER_BUILD_PLATFORM_OPTIONS=--platform=linux/amd64 \
             DOCKER_BUILD_OPTIONS="--load --provenance=false --sbom=false" "build-base-${BASE_TARGET}"
           BASE_IMAGE="${IMAGE_NAME}:base-${BASE_TARGET}-${LTS_KERNEL}-${KERNEL_FLAVOR}-${DRIVER_BRANCH}"
           CONTAINER=$(docker create "$BASE_IMAGE")
@@ -99,9 +104,9 @@ jobs:
           : "${DRIVER_VERSION:?Kernel discovery returned no driver version}"
           echo "kernel_version=$KERNEL_VERSION" >> "$GITHUB_OUTPUT"
           echo "driver_version=$DRIVER_VERSION" >> "$GITHUB_OUTPUT"
-          if [[ "${{ inputs.output }}" == "oci" ]]; then
-            tar -cf "kernel-version-${DRIVER_BRANCH}-${KERNEL_VERSION}-${{ inputs.dist }}.tar" kernel_version.txt
-            docker save "$BASE_IMAGE" -o "base-images-${DRIVER_BRANCH}-${KERNEL_VERSION}-${{ inputs.dist }}.tar"
+          if [[ "$OUTPUT" == "oci" ]]; then
+            tar -cf "kernel-version-${DRIVER_BRANCH}-${KERNEL_VERSION}-${DIST}.tar" kernel_version.txt
+            docker save "$BASE_IMAGE" -o "base-images-${DRIVER_BRANCH}-${KERNEL_VERSION}-${DIST}.tar"
           fi
       - name: Upload base image as an artifact
         if: inputs.output == 'oci'

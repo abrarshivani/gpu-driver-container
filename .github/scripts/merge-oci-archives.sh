@@ -13,9 +13,9 @@ REGCTL=${REGCTL:-regctl}
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-REFS=()
-PLATFORMS=()
-EXPECTED=()
+REF_ARGS=()
+PLATFORM_ARGS=()
+EXPECTED_ARCHITECTURES=()
 for SOURCE in "$@"; do
   ARCH=${SOURCE%%=*}
   ARCHIVE=${SOURCE#*=}
@@ -24,17 +24,21 @@ for SOURCE in "$@"; do
     *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
   esac
   [[ "$SOURCE" == *=* && -f "$ARCHIVE" ]] || { echo "Missing archive: $SOURCE" >&2; exit 1; }
-  REF="ocidir://${WORK_DIR}/${ARCH}:native"
-  "$REGCTL" image import "$REF" "$ARCHIVE"
-  REFS+=(--ref "$REF")
-  PLATFORMS+=(--platform "linux/$ARCH")
-  EXPECTED+=("$ARCH")
+  ARCH_REF="ocidir://${WORK_DIR}/${ARCH}:native"
+  "$REGCTL" image import "$ARCH_REF" "$ARCHIVE"
+  REF_ARGS+=(--ref "$ARCH_REF")
+  PLATFORM_ARGS+=(--platform "linux/$ARCH")
+  EXPECTED_ARCHITECTURES+=("$ARCH")
 done
 
 # Local OCI references keep untested scheduled images out of the registry.
-MERGED="ocidir://${WORK_DIR}/merged:combined"
-"$REGCTL" index create "$MERGED" "${REFS[@]}" "${PLATFORMS[@]}"
-EXPECTED_JSON=$(printf '%s\n' "${EXPECTED[@]}" | jq -Rs 'split("\n")[:-1] | sort')
-"$REGCTL" manifest get "$MERGED" --format raw-body | jq -e --argjson expected "$EXPECTED_JSON" \
-  '([.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort) == $expected' >/dev/null
-"$REGCTL" image export "$MERGED" "$OUTPUT"
+MERGED_REF="ocidir://${WORK_DIR}/merged:combined"
+"$REGCTL" index create "$MERGED_REF" "${REF_ARGS[@]}" "${PLATFORM_ARGS[@]}"
+EXPECTED_ARCHITECTURES_JSON=$(printf '%s\n' "${EXPECTED_ARCHITECTURES[@]}" | jq -cRs 'split("\n")[:-1] | sort')
+MERGED_ARCHITECTURES_JSON=$("$REGCTL" manifest get "$MERGED_REF" --format raw-body |
+  jq -c '[.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort')
+if [[ "$MERGED_ARCHITECTURES_JSON" != "$EXPECTED_ARCHITECTURES_JSON" ]]; then
+  echo "Merged index platforms $MERGED_ARCHITECTURES_JSON do not match $EXPECTED_ARCHITECTURES_JSON" >&2
+  exit 1
+fi
+"$REGCTL" image export "$MERGED_REF" "$OUTPUT"
