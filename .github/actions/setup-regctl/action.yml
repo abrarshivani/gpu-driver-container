@@ -1,0 +1,15 @@
+name: Set up regctl
+description: Install the pinned OCI tooling used by the precompiled pipeline
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        REGCTL_VERSION: v0.11.5
+      run: |
+        set -euo pipefail
+        TOOL_DIR="${RUNNER_TEMP}/regctl-bin"
+        mkdir -p "$TOOL_DIR"
+        curl -fsSL --retry 3 "https://github.com/regclient/regclient/releases/download/${REGCTL_VERSION}/regctl-linux-amd64" -o "$TOOL_DIR/regctl"
+        chmod +x "$TOOL_DIR/regctl"
+        echo "$TOOL_DIR" >> "$GITHUB_PATH"

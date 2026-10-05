@@ -1,0 +1,243 @@
+# Copyright 2026 NVIDIA CORPORATION
+# SPDX-License-Identifier: Apache-2.0
+
+# Shared by the image CI and the scheduled precompiled release pipeline.
+name: Native precompiled build
+
+on:
+  workflow_call:
+    inputs:
+      driver-branch:
+        required: true
+        type: string
+      flavor:
+        required: true
+        type: string
+      dist:
+        required: true
+        type: string
+      lts-kernel:
+        required: true
+        type: string
+      platforms:
+        default: '["amd64", "arm64"]'
+        type: string
+      image-name:
+        default: ''
+        type: string
+      output:
+        description: 'image for CI tags, oci for artifacts tested before publication'
+        required: true
+        type: string
+      push-images:
+        default: false
+        type: boolean
+
+jobs:
+  base:
+    runs-on: linux-amd64-cpu4
+    outputs:
+      kernel_version: ${{ steps.kernel.outputs.kernel_version }}
+      driver_version: ${{ steps.kernel.outputs.driver_version }}
+      architectures: ${{ steps.vars.outputs.architectures }}
+      image_name: ${{ steps.vars.outputs.image_name }}
+    steps:
+      - uses: actions/checkout@v7
+        name: Check out code
+      - name: Calculate build vars
+        id: vars
+        env:
+          DIST: ${{ inputs.dist }}
+          FLAVOR: ${{ inputs.flavor }}
+          PLATFORMS: ${{ inputs.platforms }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+          OUTPUT: ${{ inputs.output }}
+        run: |
+          set -euo pipefail
+          case "$DIST" in
+            ubuntu22.04) BASE_TARGET=jammy ;;
+            ubuntu24.04) BASE_TARGET=noble ;;
+            ubuntu26.04) BASE_TARGET=resolute ;;
+            *) echo "Unsupported precompiled distribution: $DIST" >&2; exit 1 ;;
+          esac
+          case "$OUTPUT" in
+            image|oci) ;;
+            *) echo "Unsupported precompiled output: $OUTPUT" >&2; exit 1 ;;
+          esac
+          if [[ -z "$IMAGE_NAME" ]]; then
+            IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/driver"
+          fi
+          echo "BASE_TARGET=$BASE_TARGET" >> "$GITHUB_ENV"
+          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+          # Jammy and azure-fde have no arm64 precompiled packages.
+          ARCHITECTURES=$(jq -ce --arg dist "$DIST" --arg flavor "$FLAVOR" \
+            '[.[] | select(. == "amd64" or (. == "arm64" and $dist != "ubuntu22.04" and $flavor != "azure-fde"))] | unique | select(length > 0)' <<< "$PLATFORMS")
+          echo "architectures=$ARCHITECTURES" >> "$GITHUB_OUTPUT"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          buildkitd-config: /etc/buildkit/buildkitd.toml
+      - name: Build base image and get kernel version
+        id: kernel
+        env:
+          IMAGE_NAME: ${{ steps.vars.outputs.image_name }}
+          BUILD_MULTI_ARCH_IMAGES: 'true'
+          DRIVER_BRANCH: ${{ inputs.driver-branch }}
+          KERNEL_FLAVOR: ${{ inputs.flavor }}
+          LTS_KERNEL: ${{ inputs.lts-kernel }}
+        run: |
+          set -euo pipefail
+          # Discover one kernel/driver pair for both native architectures.
+          make DOCKER_BUILD_PLATFORM_OPTIONS=--platform=linux/amd64 \
+            DOCKER_BUILD_OPTIONS="--load --provenance=false --sbom=false" "build-base-${BASE_TARGET}"
+          BASE_IMAGE="${IMAGE_NAME}:base-${BASE_TARGET}-${LTS_KERNEL}-${KERNEL_FLAVOR}-${DRIVER_BRANCH}"
+          CONTAINER=$(docker create "$BASE_IMAGE")
+          trap 'docker rm -f "$CONTAINER"' EXIT
+          docker cp "$CONTAINER:/var/kernel_version.txt" kernel_version.txt
+          source kernel_version.txt
+          : "${KERNEL_VERSION:?Kernel discovery returned no kernel version}"
+          : "${DRIVER_VERSION:?Kernel discovery returned no driver version}"
+          echo "kernel_version=$KERNEL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "driver_version=$DRIVER_VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "${{ inputs.output }}" == "oci" ]]; then
+            tar -cf "kernel-version-${DRIVER_BRANCH}-${KERNEL_VERSION}-${{ inputs.dist }}.tar" kernel_version.txt
+            docker save "$BASE_IMAGE" -o "base-images-${DRIVER_BRANCH}-${KERNEL_VERSION}-${{ inputs.dist }}.tar"
+          fi
+      - name: Upload base image as an artifact
+        if: inputs.output == 'oci'
+        uses: actions/upload-artifact@v7
+        with:
+          name: base-images-${{ inputs.driver-branch }}-${{ steps.kernel.outputs.kernel_version }}-${{ inputs.dist }}
+          path: ./base-images-${{ inputs.driver-branch }}-${{ steps.kernel.outputs.kernel_version }}-${{ inputs.dist }}.tar
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload kernel version as an artifact
+        if: inputs.output == 'oci'
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-version-${{ inputs.driver-branch }}-${{ steps.kernel.outputs.kernel_version }}-${{ inputs.dist }}
+          path: ./kernel-version-${{ inputs.driver-branch }}-${{ steps.kernel.outputs.kernel_version }}-${{ inputs.dist }}.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  native:
+    needs: base
+    runs-on: linux-${{ matrix.arch }}-cpu4
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJson(needs.base.outputs.architectures) }}
+    steps:
+      - uses: actions/checkout@v7
+        name: Check out code
+      - name: Set CVE updates
+        uses: ./.github/actions/set-cve-updates
+        with:
+          dist: ${{ inputs.dist }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          buildkitd-config: /etc/buildkit/buildkitd.toml
+      - name: Login to GitHub Container Registry
+        if: inputs.output == 'image' && inputs.push-images
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build image
+        env:
+          IMAGE_NAME: ${{ needs.base.outputs.image_name }}
+          BUILD_MULTI_ARCH_IMAGES: 'true'
+          PUSH_ON_BUILD: ${{ inputs.push-images }}
+          DRIVER_BRANCH: ${{ inputs.driver-branch }}
+          DRIVER_VERSION: ${{ needs.base.outputs.driver_version }}
+          DRIVER_VERSIONS: ${{ needs.base.outputs.driver_version }}
+          KERNEL_VERSION: ${{ needs.base.outputs.kernel_version }}
+          KERNEL_FLAVOR: ${{ inputs.flavor }}
+          LABEL_IMAGE_SOURCE: https://github.com/${{ github.repository }}
+          PRECOMPILED: 'true'
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.output }}" == "oci" ]]; then
+            export DOCKER_BUILD_OPTIONS="--output=type=oci,dest=./driver-images-${DRIVER_BRANCH}-${KERNEL_VERSION}-${{ inputs.dist }}-${{ matrix.arch }}.tar --provenance=false --sbom=false"
+          else
+            export VERSION="${GITHUB_SHA:0:8}-${{ matrix.arch }}"
+          fi
+          # Command-line override also takes precedence over target-specific Make defaults.
+          make DOCKER_BUILD_PLATFORM_OPTIONS=--platform=linux/${{ matrix.arch }} \
+            "build-signed_${{ inputs.dist }}-${DRIVER_VERSION}"
+      - name: Upload native image as an artifact
+        if: inputs.output == 'oci'
+        uses: actions/upload-artifact@v7
+        with:
+          name: driver-images-${{ inputs.driver-branch }}-${{ needs.base.outputs.kernel_version }}-${{ inputs.dist }}-${{ matrix.arch }}
+          path: ./driver-images-${{ inputs.driver-branch }}-${{ needs.base.outputs.kernel_version }}-${{ inputs.dist }}-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  assemble:
+    needs: [base, native]
+    if: inputs.output == 'oci' || inputs.push-images
+    runs-on: linux-amd64-cpu4
+    steps:
+      - uses: actions/checkout@v7
+        name: Check out code
+      - name: Set up Docker Buildx
+        if: inputs.output == 'image'
+        uses: docker/setup-buildx-action@v4
+        with:
+          buildkitd-config: /etc/buildkit/buildkitd.toml
+      - name: Login to GitHub Container Registry
+        if: inputs.output == 'image'
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create precompiled manifest
+        if: inputs.output == 'image'
+        env:
+          IMAGE_NAME: ${{ needs.base.outputs.image_name }}
+          ARCHITECTURES: ${{ needs.base.outputs.architectures }}
+          DRIVER_BRANCH: ${{ inputs.driver-branch }}
+          KERNEL_VERSION: ${{ needs.base.outputs.kernel_version }}
+        run: |
+          set -euo pipefail
+          SOURCES=()
+          while IFS= read -r ARCH; do
+            SOURCES+=("${IMAGE_NAME}:${GITHUB_SHA:0:8}-${ARCH}-${DRIVER_BRANCH}-${KERNEL_VERSION}-${{ inputs.dist }}")
+          done < <(jq -r '.[]' <<< "$ARCHITECTURES")
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${GITHUB_SHA:0:8}-${DRIVER_BRANCH}-${KERNEL_VERSION}-${{ inputs.dist }}" "${SOURCES[@]}"
+      - name: Download native image artifacts
+        if: inputs.output == 'oci'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: driver-images-${{ inputs.driver-branch }}-${{ needs.base.outputs.kernel_version }}-${{ inputs.dist }}-*
+          merge-multiple: true
+      - name: Set up regctl
+        if: inputs.output == 'oci'
+        uses: ./.github/actions/setup-regctl
+      - name: Assemble OCI archive without publishing
+        if: inputs.output == 'oci'
+        env:
+          ARCHITECTURES: ${{ needs.base.outputs.architectures }}
+          DRIVER_BRANCH: ${{ inputs.driver-branch }}
+          KERNEL_VERSION: ${{ needs.base.outputs.kernel_version }}
+        run: |
+          set -euo pipefail
+          IMAGE_PATH="./driver-images-${DRIVER_BRANCH}-${KERNEL_VERSION}-${{ inputs.dist }}"
+          SOURCES=()
+          while IFS= read -r ARCH; do
+            SOURCES+=("${ARCH}=${IMAGE_PATH}-${ARCH}.tar")
+          done < <(jq -r '.[]' <<< "$ARCHITECTURES")
+          .github/scripts/merge-oci-archives.sh "${IMAGE_PATH}.tar" "${SOURCES[@]}"
+      - name: Upload combined image as an artifact
+        if: inputs.output == 'oci'
+        uses: actions/upload-artifact@v7
+        with:
+          name: driver-images-${{ inputs.driver-branch }}-${{ needs.base.outputs.kernel_version }}-${{ inputs.dist }}
+          path: ./driver-images-${{ inputs.driver-branch }}-${{ needs.base.outputs.kernel_version }}-${{ inputs.dist }}.tar
+          if-no-files-found: error
+          retention-days: 1
