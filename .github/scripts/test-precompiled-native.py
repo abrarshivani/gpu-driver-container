@@ -282,8 +282,10 @@ esac
             [
                 self.bash,
                 "-c",
-                f'source "{script}" generic 580 ubuntu24.04 6.8 -arm64; '
-                'echo "$KERNEL_VERSION"',
+                (
+                    f'source "{script}" generic 580 ubuntu24.04 6.8 -arm64; '
+                    'echo "$KERNEL_VERSION"'
+                ),
             ],
             cwd=self.work,
             env=self.env,
