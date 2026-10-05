@@ -54,11 +54,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         apt-utils git curl && \
     rm -rf /var/lib/apt/lists/*
 
-RUN echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ noble main universe" > /etc/apt/sources.list && \
-    echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ noble-updates main universe" >> /etc/apt/sources.list && \
-    echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ noble-security main universe" >> /etc/apt/sources.list && \
-    echo "deb [arch=amd64] http://us.archive.ubuntu.com/ubuntu noble-updates main restricted" >> /etc/apt/sources.list && \
-    echo "deb [arch=amd64] http://us.archive.ubuntu.com/ubuntu noble-security main restricted" >> /etc/apt/sources.list && \
+# Use the repository for this architecture when discovering available kernel packages.
+RUN arch="$(dpkg --print-architecture)" && \
+    if [ "$arch" = amd64 ]; then mirror=http://archive.ubuntu.com/ubuntu; \
+    else mirror=http://ports.ubuntu.com/ubuntu-ports; fi && \
+    printf 'deb [arch=%s] %s %s main restricted universe multiverse\n' \
+        "$arch" "$mirror" noble "$arch" "$mirror" noble-updates \
+        "$arch" "$mirror" noble-security > /etc/apt/sources.list && \
     usermod -o -u 0 -g 0 _apt
 
 COPY generate-ci-config /usr/local/bin/generate-ci-config
