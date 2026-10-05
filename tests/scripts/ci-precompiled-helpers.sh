@@ -12,7 +12,7 @@ get_kernel_versions_to_test() {
     kernel_versions=()
     for kernel_flavor in "${KERNEL_FLAVORS[@]}"; do
         for DRIVER_BRANCH in "${DRIVER_BRANCHES[@]}"; do
-            source ./tests/scripts/findkernelversion.sh "${kernel_flavor}" "$DRIVER_BRANCH" "$DIST" "$LTS_KERNEL" "$PLATFORM_SUFFIX" >&2
+            source ./tests/scripts/findkernelversion.sh "${kernel_flavor}" "$DRIVER_BRANCH" "$DIST" "$LTS_KERNEL" "$PLATFORM_SUFFIX" >&2 || return
             if [[ "$should_continue" == true ]]; then
                 break
             fi

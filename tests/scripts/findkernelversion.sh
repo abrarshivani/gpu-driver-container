@@ -22,18 +22,23 @@ prefix="kernel-version-${DRIVER_BRANCH}-${LTS_KERNEL}"
 suffix="${KERNEL_FLAVOR}-${DIST}"
 
 artifact_dir="./kernel-version-artifacts"
-artifact_file=$(find "$artifact_dir" -maxdepth 1 -type f -name "${prefix}*-${suffix}.tar" | head -1)
-if [ -n "$artifact_file" ]; then
-    tar -xf "$artifact_file" -C ./
-    export $(grep -oE 'KERNEL_VERSION=[^ ]+' ./kernel_version.txt)
-    rm -f kernel_version.txt
+PLATFORM="${PLATFORM_SUFFIX#-}"
+[ -z "$PLATFORM" ] && PLATFORM=amd64
+artifact_file=$(find "$artifact_dir" -maxdepth 1 -type f -name "${prefix}*-${suffix}-${PLATFORM}.tar" | head -1)
+if [ -z "$artifact_file" ]; then
+    echo "Missing native kernel metadata for $DRIVER_BRANCH/$DIST/$LTS_KERNEL/$KERNEL_FLAVOR/$PLATFORM" >&2
+    return 1
 fi
+tar -xf "$artifact_file" -C ./
+unset KERNEL_VERSION
+# shellcheck disable=SC1091
+source ./kernel_version.txt
+: "${KERNEL_VERSION:?Native kernel metadata contains no kernel version}"
+rm -f kernel_version.txt
 
 # calculate driver tag
 status_nvcr=0
 status_ghcr=0
-PLATFORM=$(echo "${PLATFORM_SUFFIX}" | sed 's/-//')
-[ -z "$PLATFORM" ] && PLATFORM=amd64
 regctl manifest inspect nvcr.io/nvidia/driver:${DRIVER_BRANCH}-${KERNEL_VERSION}-${DIST} --platform=linux/${PLATFORM} > /dev/null 2>&1; status_nvcr=$?
 regctl manifest inspect ghcr.io/nvidia/driver:${DRIVER_BRANCH}-${KERNEL_VERSION}-${DIST} --platform=linux/${PLATFORM} > /dev/null 2>&1; status_ghcr=$?
 
