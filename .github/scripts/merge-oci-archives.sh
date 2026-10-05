@@ -7,7 +7,7 @@ if [[ $# -lt 2 ]]; then
   echo "Usage: $0 <output.tar> <arch=input.tar> [<arch=input.tar> ...]" >&2
   exit 2
 fi
-OUTPUT=$1
+OUTPUT_ARCHIVE=$1
 shift
 REGCTL=${REGCTL:-regctl}
 WORK_DIR=$(mktemp -d)
@@ -17,13 +17,14 @@ REF_ARGS=()
 PLATFORM_ARGS=()
 EXPECTED_ARCHITECTURES=()
 for SOURCE in "$@"; do
+  [[ "$SOURCE" == *=* ]] || { echo "Expected <arch>=<archive>, got: $SOURCE" >&2; exit 2; }
   ARCH=${SOURCE%%=*}
   ARCHIVE=${SOURCE#*=}
   case "$ARCH" in
     amd64|arm64) ;;
     *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
   esac
-  [[ "$SOURCE" == *=* && -f "$ARCHIVE" ]] || { echo "Missing archive: $SOURCE" >&2; exit 1; }
+  [[ -f "$ARCHIVE" ]] || { echo "Missing archive: $SOURCE" >&2; exit 1; }
   ARCH_REF="ocidir://${WORK_DIR}/${ARCH}:native"
   "$REGCTL" image import "$ARCH_REF" "$ARCHIVE"
   REF_ARGS+=(--ref "$ARCH_REF")
@@ -34,11 +35,11 @@ done
 # Local OCI references keep untested scheduled images out of the registry.
 MERGED_REF="ocidir://${WORK_DIR}/merged:combined"
 "$REGCTL" index create "$MERGED_REF" "${REF_ARGS[@]}" "${PLATFORM_ARGS[@]}"
-EXPECTED_ARCHITECTURES_JSON=$(printf '%s\n' "${EXPECTED_ARCHITECTURES[@]}" | jq -cRs 'split("\n")[:-1] | sort')
+EXPECTED_ARCHITECTURES_JSON=$(jq -cn '$ARGS.positional | sort' --args "${EXPECTED_ARCHITECTURES[@]}")
 MERGED_ARCHITECTURES_JSON=$("$REGCTL" manifest get "$MERGED_REF" --format raw-body |
   jq -c '[.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort')
 if [[ "$MERGED_ARCHITECTURES_JSON" != "$EXPECTED_ARCHITECTURES_JSON" ]]; then
   echo "Merged index platforms $MERGED_ARCHITECTURES_JSON do not match $EXPECTED_ARCHITECTURES_JSON" >&2
   exit 1
 fi
-"$REGCTL" image export "$MERGED_REF" "$OUTPUT"
+"$REGCTL" image export "$MERGED_REF" "$OUTPUT_ARCHIVE"

@@ -70,7 +70,6 @@ jobs:
       dist: ${{ matrix.dist }}
       lts-kernel: ${{ matrix.lts_kernel }}
       platforms: ${{ needs.set-driver-version-matrix.outputs.platforms }}
-      image-name: ghcr.io/nvidia/driver
       output: oci
 
   determine-e2e-test-matrix:

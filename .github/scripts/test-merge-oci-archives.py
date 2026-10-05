@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise offline OCI assembly with the real pinned regctl, without Docker."""
+"""Exercise merge-oci-archives.sh against regctl ($REGCTL or PATH) with local archives only."""
 
 import hashlib
 import io
@@ -10,6 +10,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from typing import NamedTuple
 
 REGCTL = os.environ.get("REGCTL", "regctl")
 SCRIPT = Path(__file__).with_name("merge-oci-archives.sh")
@@ -17,13 +18,24 @@ OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 OCI_INDEX = "application/vnd.oci.image.index.v1+json"
 
 
-def write_oci_archive(path: Path, arch: str, nested: bool = False) -> tuple[str, bytes]:
-    """Create content-addressed OCI data in both single-image and Buildx shapes."""
-    blobs = {}
+class BuiltImage(NamedTuple):
+    manifest_digest: str
+    layer: bytes
+
+
+def write_oci_archive(
+    path: Path, arch: str, *, wrap_in_index: bool = False
+) -> BuiltImage:
+    """Write a one-image OCI layout tar.
+
+    With wrap_in_index, index.json points at a nested image index, as Buildx emits;
+    otherwise it points at the image manifest directly.
+    """
+    layout_files: dict[str, bytes] = {}
 
     def add_blob(data: bytes, media_type: str) -> dict[str, object]:
         digest = hashlib.sha256(data).hexdigest()
-        blobs[f"blobs/sha256/{digest}"] = data
+        layout_files[f"blobs/sha256/{digest}"] = data
         return {
             "mediaType": media_type,
             "digest": f"sha256:{digest}",
@@ -37,7 +49,7 @@ def write_oci_archive(path: Path, arch: str, nested: bool = False) -> tuple[str,
         entry.size = len(data)
         layer.addfile(entry, io.BytesIO(data))
     layer_data = layer_buffer.getvalue()
-    config = add_blob(
+    config_descriptor = add_blob(
         json.dumps(
             {
                 "architecture": arch,
@@ -51,12 +63,12 @@ def write_oci_archive(path: Path, arch: str, nested: bool = False) -> tuple[str,
         ).encode(),
         "application/vnd.oci.image.config.v1+json",
     )
-    manifest = add_blob(
+    manifest_descriptor = add_blob(
         json.dumps(
             {
                 "schemaVersion": 2,
                 "mediaType": OCI_MANIFEST,
-                "config": config,
+                "config": config_descriptor,
                 "layers": [
                     add_blob(layer_data, "application/vnd.oci.image.layer.v1.tar")
                 ],
@@ -64,109 +76,123 @@ def write_oci_archive(path: Path, arch: str, nested: bool = False) -> tuple[str,
         ).encode(),
         OCI_MANIFEST,
     )
-    image_digest = manifest["digest"]
-    if nested:
-        manifest["platform"] = {"os": "linux", "architecture": arch}
-        manifest = add_blob(
+    top_level_descriptor = manifest_descriptor
+    if wrap_in_index:
+        platform_descriptor = {
+            **manifest_descriptor,
+            "platform": {"os": "linux", "architecture": arch},
+        }
+        top_level_descriptor = add_blob(
             json.dumps(
                 {
                     "schemaVersion": 2,
                     "mediaType": OCI_INDEX,
-                    "manifests": [manifest],
+                    "manifests": [platform_descriptor],
                 }
             ).encode(),
             OCI_INDEX,
         )
-    blobs["index.json"] = json.dumps(
-        {"schemaVersion": 2, "manifests": [manifest]}
+    layout_files["index.json"] = json.dumps(
+        {"schemaVersion": 2, "manifests": [top_level_descriptor]}
     ).encode()
-    blobs["oci-layout"] = b'{"imageLayoutVersion":"1.0.0"}'
+    layout_files["oci-layout"] = b'{"imageLayoutVersion":"1.0.0"}'
     with tarfile.open(path, "w") as archive:
-        for name, data in blobs.items():
+        for name, data in layout_files.items():
             entry = tarfile.TarInfo(name)
             entry.size = len(data)
             archive.addfile(entry, io.BytesIO(data))
-    return image_digest, layer_data
+    return BuiltImage(str(manifest_descriptor["digest"]), layer_data)
 
 
 class MergeArchivesTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp_dir.cleanup)
-        self.root = Path(self.temp_dir.name)
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        self.root = Path(temp_dir.name)
         self.output = self.root / "combined.tar"
-        # These tests use only local OCI data and need no Docker credentials.
-        docker_config = self.root / "docker-config"
-        docker_config.mkdir()
-        self.env = {**os.environ, "REGCTL": REGCTL, "DOCKER_CONFIG": str(docker_config)}
+        self.env = {**os.environ, "REGCTL": REGCTL}
 
     def merge(self, *sources: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [str(SCRIPT), str(self.output), *sources],
             env=self.env,
             capture_output=True,
-            check=False,
             text=True,
+            check=False,
         )
 
-    def assert_combined_archive(self, expected: dict[str, tuple[str, bytes]]) -> None:
-        ref = f"ocidir://{self.root}/imported:combined"
+    def assert_combined_archive(self, expected_images: dict[str, BuiltImage]) -> None:
+        imported_ref = f"ocidir://{self.root}/imported:combined"
         subprocess.run(
-            [REGCTL, "image", "import", ref, str(self.output)], env=self.env, check=True
+            [REGCTL, "image", "import", imported_ref, str(self.output)],
+            env=self.env,
+            check=True,
         )
-        manifest = json.loads(
+        merged_index = json.loads(
             subprocess.check_output(
-                [
-                    REGCTL,
-                    "manifest",
-                    "get",
-                    ref,
-                    "--format",
-                    "raw-body",
-                ],
+                [REGCTL, "manifest", "get", imported_ref, "--format", "raw-body"],
                 env=self.env,
             )
         )
         self.assertEqual(
-            {
-                descriptor["platform"]["architecture"]: descriptor["digest"]
-                for descriptor in manifest["manifests"]
-            },
-            {arch: digest for arch, (digest, _) in expected.items()},
+            sorted(
+                (
+                    descriptor["platform"]["os"],
+                    descriptor["platform"]["architecture"],
+                    descriptor["digest"],
+                )
+                for descriptor in merged_index["manifests"]
+            ),
+            sorted(
+                ("linux", arch, image.manifest_digest)
+                for arch, image in expected_images.items()
+            ),
         )
         with tarfile.open(self.output) as archive:
-            for _, layer in expected.values():
-                name = f"blobs/sha256/{hashlib.sha256(layer).hexdigest()}"
-                self.assertEqual(archive.extractfile(name).read(), layer)
+            for image in expected_images.values():
+                layer_name = f"blobs/sha256/{hashlib.sha256(image.layer).hexdigest()}"
+                layer_file = archive.extractfile(layer_name)
+                assert layer_file is not None
+                self.assertEqual(layer_file.read(), image.layer)
 
     def test_merge_preserves_native_platforms_digests_and_layers(self) -> None:
-        amd64 = write_oci_archive(self.root / "amd64.tar", "amd64")
-        arm64 = write_oci_archive(self.root / "arm64.tar", "arm64", nested=True)
+        amd64_image = write_oci_archive(self.root / "amd64.tar", "amd64")
+        arm64_image = write_oci_archive(
+            self.root / "arm64.tar", "arm64", wrap_in_index=True
+        )
         result = self.merge(
             f"amd64={self.root}/amd64.tar", f"arm64={self.root}/arm64.tar"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_combined_archive({"amd64": amd64, "arm64": arm64})
+        self.assert_combined_archive({"amd64": amd64_image, "arm64": arm64_image})
 
     def test_amd64_only_archive(self) -> None:
-        amd64 = write_oci_archive(self.root / "amd64.tar", "amd64", nested=True)
+        amd64_image = write_oci_archive(
+            self.root / "amd64.tar", "amd64", wrap_in_index=True
+        )
         result = self.merge(f"amd64={self.root}/amd64.tar")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_combined_archive({"amd64": amd64})
+        self.assert_combined_archive({"amd64": amd64_image})
 
-    def test_missing_architecture_fails_without_output(self) -> None:
+    def test_missing_archive_fails_without_output(self) -> None:
         write_oci_archive(self.root / "amd64.tar", "amd64")
         result = self.merge(
             f"amd64={self.root}/amd64.tar", f"arm64={self.root}/missing.tar"
         )
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Missing archive: arm64=", result.stderr)
         self.assertFalse(self.output.exists())
 
-    def test_wrong_platform_fails_without_output(self) -> None:
-        write_oci_archive(self.root / "arm64.tar", "arm64", nested=True)
-        result = self.merge(f"amd64={self.root}/arm64.tar")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(self.output.exists())
+    def test_mislabeled_platform_fails_without_output(self) -> None:
+        for wrap_in_index in (False, True):
+            with self.subTest(wrap_in_index=wrap_in_index):
+                write_oci_archive(
+                    self.root / "arm64.tar", "arm64", wrap_in_index=wrap_in_index
+                )
+                result = self.merge(f"amd64={self.root}/arm64.tar")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("do not match", result.stderr)
+                self.assertFalse(self.output.exists())
 
     def test_duplicate_platform_fails_without_output(self) -> None:
         write_oci_archive(self.root / "amd64.tar", "amd64")
@@ -175,6 +201,13 @@ class MergeArchivesTest(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("do not match", result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_source_without_architecture_is_a_usage_error(self) -> None:
+        write_oci_archive(self.root / "amd64.tar", "amd64")
+        result = self.merge(f"{self.root}/amd64.tar")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Expected <arch>=<archive>", result.stderr)
         self.assertFalse(self.output.exists())
 
 
