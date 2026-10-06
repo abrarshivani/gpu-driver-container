@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise merge-oci-archives.sh against regctl ($REGCTL or PATH) with local archives only."""
+"""Exercise merge-oci-archives.sh with local archives and regctl ($REGCTL or PATH)."""
 
 import hashlib
 import io
