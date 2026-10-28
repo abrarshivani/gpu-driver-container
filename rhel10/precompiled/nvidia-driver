@@ -14,6 +14,9 @@ NVIDIA_MODESET_MODULE_PARAMS=()
 NVIDIA_PEERMEM_MODULE_PARAMS=()
 TARGETARCH=${TARGETARCH:?"Missing TARGETARCH env"}
 USE_HOST_MOFED="${USE_HOST_MOFED:-false}"
+# The precompiled image sets only DRIVER_VERSION in its environment.
+DRIVER_BRANCH=${DRIVER_BRANCH:-${DRIVER_VERSION%%.*}}
+GPU_RESET_BEFORE_LOAD_ENABLED="${GPU_RESET_BEFORE_LOAD_ENABLED:-true}"
 DNF_RELEASEVER=${DNF_RELEASEVER:-""}
 RHEL_VERSION=${RHEL_VERSION:-""}
 RHEL_MAJOR_VERSION=10
@@ -233,6 +236,64 @@ _configure_fabric_manager() {
     done <<< "${nvfm_env_vars}"
 }
 
+# Reset the GPUs so that the kernel modules load against clean device state.
+# R615 and later cannot take over GPUs that an earlier driver branch left behind in
+# the same boot: the adapter fails to initialize inside modprobe, or the first CUDA
+# job hangs in UVM. Only a reset clears that state, and it must precede the modprobe.
+_reset_gpus() {
+    if [ "${DRIVER_BRANCH}" -lt 615 ]; then
+        return 0
+    fi
+    if [ "${GPU_RESET_BEFORE_LOAD_ENABLED}" != "true" ]; then
+        echo "GPU reset before driver load is disabled, skipping"
+        return 0
+    fi
+    if [ -d /sys/module/nvidia ]; then
+        echo "WARNING: the nvidia kernel module is still loaded, skipping the GPU reset"
+        return 0
+    fi
+
+    echo "Resetting NVIDIA GPUs before loading the kernel modules..."
+    local device_path pci_address device_class bound_driver_path reset_methods
+    for device_path in /sys/bus/pci/devices/*; do
+        [ -r "${device_path}/vendor" ] || continue
+        [ "$(< "${device_path}/vendor")" = "0x10de" ] || continue
+        # Reset the GPU functions only: 0x0302 is a 3D controller and 0x0300 a VGA
+        # controller, while the audio and USB functions of a board are left alone.
+        device_class=$(< "${device_path}/class")
+        [[ "${device_class}" == 0x0302* || "${device_class}" == 0x0300* ]] || continue
+
+        pci_address="${device_path##*/}"
+        if [ -e "${device_path}/driver" ]; then
+            # Something else already owns the device, vfio-pci for a GPU passed
+            # through to a VM among others, so it is not ours to reset.
+            bound_driver_path=$(readlink -f "${device_path}/driver")
+            echo "GPU ${pci_address} is bound to ${bound_driver_path##*/}, skipping its reset"
+            continue
+        fi
+        if [ ! -e "${device_path}/reset_method" ]; then
+            echo "GPU ${pci_address} does not expose reset_method, skipping its reset"
+            continue
+        fi
+        reset_methods=$(< "${device_path}/reset_method")
+        if [[ " ${reset_methods} " != *" flr "* ]]; then
+            echo "GPU ${pci_address} does not support FLR (reset methods: ${reset_methods}), skipping its reset"
+            continue
+        fi
+
+        # The kernel tries the reset methods in the order it lists them, which on
+        # some platforms starts with an ACPI reset, so pin the method to FLR and
+        # restore the kernel's own list afterwards.
+        echo "Resetting GPU ${pci_address} with FLR..."
+        if ! echo "flr" > "${device_path}/reset_method"; then
+            echo "WARNING: failed to select FLR for GPU ${pci_address}, skipping its reset"
+            continue
+        fi
+        echo 1 > "${device_path}/reset" || echo "WARNING: failed to reset GPU ${pci_address}"
+        echo "default" > "${device_path}/reset_method" || echo "WARNING: failed to restore the reset methods of GPU ${pci_address}"
+    done
+}
+
 # Load the kernel modules and start persistenced.
 _load_driver() {
     echo "Parsing kernel module parameters..."
@@ -259,6 +320,8 @@ _load_driver() {
             cp /opt/lib/firmware/nvidia/${DRIVER_VERSION}/gsp_*.bin $nv_fw_search_path/nvidia/${DRIVER_VERSION}
         fi
     fi
+
+    _reset_gpus
 
     echo "Loading NVIDIA driver kernel modules..."
     set -o xtrace +o nounset
