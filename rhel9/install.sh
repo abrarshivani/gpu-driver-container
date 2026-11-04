@@ -98,7 +98,14 @@ nvidia_installer () {
   fi
 }
 
+# From R620, fabric manager and IMEX ship as -direct packages versioned independently of the
+# driver; their driver-versioned part moved to the libnvidia-fmdrv and libnvidia-imex libraries.
 fabricmanager_install() {
+  if [ "${DRIVER_BRANCH}" -ge "620" ]; then
+    dnf install -y nvidia-fabricmanager-direct nvidia-fabricmanager-direct-devel "libnvidia-fmdrv-${DRIVER_VERSION}"
+    dnf versionlock add nvidia-fabricmanager-direct nvidia-fabricmanager-direct-devel libnvidia-fmdrv
+    return 0
+  fi
   dnf install -y nvidia-fabricmanager-${DRIVER_VERSION} nvidia-fabric-manager-devel-${DRIVER_VERSION}
   dnf versionlock add nvidia-fabricmanager nvidia-fabric-manager-devel
 }
@@ -121,6 +128,11 @@ nvlink5_pkgs_install() {
 }
 
 imex_install() {
+  if [ "${DRIVER_BRANCH}" -ge "620" ]; then
+    dnf install -y nvidia-imex-direct "libnvidia-imex-${DRIVER_VERSION}"
+    dnf versionlock add nvidia-imex-direct libnvidia-imex
+    return 0
+  fi
   dnf install -y nvidia-imex-${DRIVER_VERSION}
   dnf versionlock add nvidia-imex
 }

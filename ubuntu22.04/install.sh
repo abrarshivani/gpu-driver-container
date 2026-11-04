@@ -44,7 +44,17 @@ setup_cuda_repo() {
     dpkg -i cuda-keyring_1.1-1_all.deb
 }
 
+# From R620, fabric manager and IMEX ship as -direct packages versioned independently of the
+# driver; their driver-versioned part moved to the libnvidia-fmdrv and libnvidia-imex libraries.
 fabricmanager_install() {
+  if [ "${DRIVER_BRANCH}" -ge "620" ]; then
+    apt-get install -y --no-install-recommends \
+        nvidia-fabricmanager-direct \
+        nvidia-fabricmanager-direct-dev \
+        "libnvidia-fmdrv1=${DRIVER_VERSION}*"
+    apt-mark hold nvidia-fabricmanager-direct nvidia-fabricmanager-direct-dev libnvidia-fmdrv1
+    return 0
+  fi
   apt-get install -y --no-install-recommends \
       nvidia-fabricmanager=${DRIVER_VERSION}* \
       nvidia-fabricmanager-dev=${DRIVER_VERSION}*
@@ -69,6 +79,11 @@ nvlink5_pkgs_install() {
 }
 
 imex_install() {
+  if [ "${DRIVER_BRANCH}" -ge "620" ]; then
+    apt-get install -y --no-install-recommends "nvidia-modprobe=${DRIVER_VERSION}*" nvidia-imex-direct "libnvidia-imex1=${DRIVER_VERSION}*"
+    apt-mark hold nvidia-modprobe nvidia-imex-direct libnvidia-imex1
+    return 0
+  fi
   apt-get install -y --no-install-recommends nvidia-modprobe=${DRIVER_VERSION}* nvidia-imex=${DRIVER_VERSION}*
   apt-mark hold nvidia-modprobe nvidia-imex
 }
