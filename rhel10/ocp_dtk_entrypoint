@@ -17,21 +17,7 @@ _host_selinux_enabled() {
         [ -f /proc/1/root/sys/fs/selinux/enforce ]
 }
 
-nv-ctr-run-with-dtk() {
-    set -x
-
-    if [[ "${RHCOS_IMAGE_MISSING:-}" == "true" ]]; then
-        echo "WARNING: RHCOS '${RHCOS_VERSION:-}' imagetag missing, using entitlement-based fallback"
-        exec bash -x nvidia-driver init
-    fi
-
-    if _should_skip_kernel_module_reload; then
-        echo "The NVIDIA driver is already loaded with the desired configuration, skipping kernel module build and proceeding with userspace-only install"
-        exec bash -x nvidia-driver init
-    fi
-
-    echo "Fast path not detected: building driver and modules"
-
+_prepare_shared_dir() {
     if [[ ! -f "$DRIVER_TOOLKIT_SHARED_DIR/dir_prepared" ]]; then
         cp -r \
            /tmp/install.sh \
@@ -57,6 +43,28 @@ nv-ctr-run-with-dtk() {
 
         touch "$DRIVER_TOOLKIT_SHARED_DIR/dir_prepared"
     fi
+}
+
+nv-ctr-run-with-dtk() {
+    set -x
+
+    if [[ "${RHCOS_IMAGE_MISSING:-}" == "true" ]]; then
+        echo "WARNING: RHCOS '${RHCOS_VERSION:-}' imagetag missing, using entitlement-based fallback"
+        exec bash -x nvidia-driver init
+    fi
+
+    if _should_skip_kernel_module_reload; then
+        # nvidia-fs-ctr waits for dir_prepared, then for openshift-driver-toolkit-ctr to build nvidia-fs.ko
+        if _gpu_direct_storage_enabled; then
+            _prepare_shared_dir
+        fi
+        echo "The NVIDIA driver is already loaded with the desired configuration, skipping kernel module build and proceeding with userspace-only install"
+        exec bash -x nvidia-driver init
+    fi
+
+    echo "Fast path not detected: building driver and modules"
+
+    _prepare_shared_dir
 
     set +x
     while [[ ! -f "$DRIVER_TOOLKIT_SHARED_DIR/driver_build_started" ]]; do
@@ -109,7 +117,8 @@ dtk-build-driver() {
     fi
 
     # Check if fast path is being used - if so, skip building and signal completion
-    if _should_skip_kernel_module_reload; then
+    # nvidia-fs-ctr still needs nvidia-fs.ko from a full build.
+    if _should_skip_kernel_module_reload && ! _gpu_direct_storage_enabled; then
         echo "The NVIDIA driver is already loaded with the desired configuration, skipping build"
         echo "Signaling driver_built to the main container and sleeping forever..."
         touch "$DRIVER_TOOLKIT_SHARED_DIR/driver_build_started"
