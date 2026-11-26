@@ -99,6 +99,17 @@ _resolve_kernel_version() {
     return 0
 }
 
+# A 64k page size kernel runs as <version>+64k, but its RPMs are named
+# kernel-64k-* and their version has no +64k suffix.
+_kernel_package_name() {
+    local subpackage_suffix="${1:+-$1}"
+    if [[ "${KERNEL_VERSION}" == *+64k ]]; then
+        echo "kernel-64k${subpackage_suffix}-${KERNEL_VERSION%+64k}"
+    else
+        echo "kernel${subpackage_suffix}-${KERNEL_VERSION}"
+    fi
+}
+
 _set_daemons_status() {
     mkdir -p /run/nvidia/validations
     echo "${1}" > /run/nvidia/validations/.driver-daemons-status
@@ -148,11 +159,11 @@ _install_prerequisites() (
     fi
 
     echo "Installing Linux kernel headers..."
-    dnf -q -y --releasever=${DNF_RELEASEVER} install kernel-headers-${KERNEL_VERSION} kernel-devel-${KERNEL_VERSION} > /dev/null
+    dnf -q -y --releasever="${DNF_RELEASEVER}" install "kernel-headers-${KERNEL_VERSION%+64k}" "$(_kernel_package_name devel)" > /dev/null
     ln -s /usr/src/kernels/${KERNEL_VERSION} /lib/modules/${KERNEL_VERSION}/build
 
     echo "Installing Linux kernel module files..."
-    dnf -q -y --releasever=${DNF_RELEASEVER} --setopt=install_weak_deps=False install kernel-${KERNEL_VERSION} > /dev/null
+    dnf -q -y --releasever="${DNF_RELEASEVER}" --setopt=install_weak_deps=False install "$(_kernel_package_name)" > /dev/null
 
     # Prevent depmod from giving a WARNING about missing files
     touch /lib/modules/${KERNEL_VERSION}/modules.order
@@ -202,7 +213,7 @@ _install_prerequisites() (
 _remove_prerequisites() {
     true
     if [ "${PACKAGE_TAG:-}" != "builtin" ]; then
-        dnf -q -y remove kernel-headers-${KERNEL_VERSION} kernel-devel-${KERNEL_VERSION} > /dev/null
+        dnf -q -y remove "kernel-headers-${KERNEL_VERSION%+64k}" "$(_kernel_package_name devel)" > /dev/null
         # TODO remove module files not matching an existing driver package.
     fi
 }
